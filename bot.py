@@ -78,7 +78,7 @@ def load_data():
         invite_data = {}
         member_join_data = {}
         server_config = {}
-       muted_users = {}
+        muted_users = {}
 
 # Save data to file
 def save_data():
@@ -94,155 +94,132 @@ def save_data():
 # Initialize data
 load_data()
 
-# Track invites
-@bot.event
-async def on_ready():
-    display_banner()
-    print(f"\n✅ {bot.user} has logged in successfully!")
-    print(f"📋 Bot ID: {bot.user.id}")
-    print("🌐 Connected to servers:")
-    for guild in bot.guilds:
-        print(f"   📍 {guild.name} ({guild.member_count} members)")
-    print("="*60)
-    
-    # Update invite tracking for all servers
-    for guild in bot.guilds:
-        try:
-            # Initialize server config if not exists
-            if str(guild.id) not in server_config:
-                server_config[str(guild.id)] = {
-                    'log_channel': None,
-                    'welcome_channel': None,
-                    'auto_role': None,
-                    'invites': {}
-                }
-            
-            # Initialize invite data if not exists
-            if str(guild.id) not in invite_data:
-                invite_data[str(guild.id)] = {}
-            
-            # Fetch current invites
-            invites = await guild.invites()
-            for invite in invites:
-                invite_data[str(guild.id)][invite.code] = {
-                    'uses': invite.uses,
-                    'inviter': invite.inviter.id if invite.inviter else None,
-                    'url': invite.url
-                }
-        except discord.Forbidden:
-            print(f"⚠️ Missing permissions to fetch invites in {guild.name}")
-    
-    save_data()
-    print("💾 Data loaded and bot is ready!")
-    
-    # Set custom status
-    await bot.change_presence(activity=discord.Game(name="Made By Aayush | -help"))
-    
-    # Sync slash commands
-    try:
-        synced = await bot.tree.sync()
-        print(f"🔄 Synced {len(synced)} slash commands")
-    except Exception as e:
-        print(f"❌ Failed to sync slash commands: {e}")
-
-# Track when a new member joins
+# Track invites and handle join
 @bot.event
 async def on_member_join(member):
     guild = member.guild
     guild_id = str(guild.id)
-    
-    # Get invites before and after join to find which invite was used
+
+    # Make sure server config exists
+    if guild_id not in server_config:
+        server_config[guild_id] = {
+            'log_channel': None,
+            'welcome_channel': None,
+            'auto_role': None,
+            'invites': {}
+        }
+
+    # Get invites before join
+    invites_before = invite_data.get(guild_id, {}).copy()
+    invites_after = await guild.invites()
+
+    used_invite = None
+    inviter_id = None
+    inviter = None
+
+    for invite in invites_after:
+        if invite.code in invites_before and invite.uses > invites_before[invite.code]['uses']:
+            used_invite = invite
+            inviter_id = invites_before[invite.code]['inviter']
+            inviter = await bot.fetch_user(inviter_id) if inviter_id else None
+
+            # Update invite data
+            invite_data[guild_id][invite.code] = {
+                'uses': invite.uses,
+                'inviter': inviter_id,
+                'url': invite.url
+            }
+
+            # Store join data
+            member_join_data[str(member.id)] = {
+                'guild_id': guild_id,
+                'invite_code': invite.code,
+                'inviter_id': inviter_id,
+                'join_time': datetime.datetime.now().isoformat()
+            }
+
+            # Update inviter's count
+            if inviter_id:
+                if 'invites' not in server_config[guild_id]:
+                    server_config[guild_id]['invites'] = {}
+
+                if str(inviter_id) not in server_config[guild_id]['invites']:
+                    server_config[guild_id]['invites'][str(inviter_id)] = {
+                        "regular": 0,
+                        "left": 0,
+                        "fake": 0
+                    }
+
+                server_config[guild_id]['invites'][str(inviter_id)]["regular"] += 1
+
+            break  # stop after finding used invite
+
+    # Send welcome message if configured
+    if server_config[guild_id].get('welcome_channel'):
+        channel = bot.get_channel(server_config[guild_id]['welcome_channel'])
+        if channel:
+            embed = discord.Embed(
+                title="🎉 Welcome!",
+                description=f"Hey {member.mention}, welcome to **{guild.name}**!",
+                color=discord.Color.green()
+            )
+            if used_invite and inviter:
+                embed.add_field(name="📬 Invited by", value=inviter.mention, inline=True)
+                embed.add_field(name="🔗 Invite Code", value=used_invite.code, inline=True)
+            embed.add_field(name="👥 Member Count", value=f"{guild.member_count}", inline=True)
+            embed.set_thumbnail(url=member.avatar.url if member.avatar else member.default_avatar.url)
+            await channel.send(embed=embed)
+
+    # Assign auto role if configured
     try:
-        invites_before = invite_data.get(guild_id, {}).copy()
-        invites_after = await guild.invites()
-        
-        used_invite = None
-        inviter = None
-        
-        for invite in invites_after:
-            # Check if this invite has more uses than before
-            if invite.code in invites_before and invite.uses > invites_before[invite.code]['uses']:
-                # This is the used invite
-                used_invite = invite
-                inviter_id = invites_before[invite.code]['inviter']
-                inviter = await bot.fetch_user(inviter_id) if inviter_id else None
-# Update invite data
-                invite_data[guild_id][invite.code] = {
-                    'uses': invite.uses,
-                    'inviter': inviter_id,
-                    'url': invite.url
-                }
-                
-                # Store join data
-                member_join_data[str(member.id)] = {
-                    'guild_id': guild_id,
-                    'invite_code': invite.code,
-                    'inviter_id': inviter_id,
-                    'join_time': datetime.datetime.now().isoformat()
-                }
-                
-                # Update inviter's count
-                if inviter_id:
-                    if 'invites' not in server_config[guild_id]:
-                        server_config[guild_id]['invites'] = {}
-                    
-                    if str(inviter_id) not in server_config[guild_id]['invites']:
-                        server_config[guild_id]['invites'][str(inviter_id)] = 0
-                    
-                    server_config[guild_id]['invites'][str(inviter_id)] += 1
-                
-                break
-        
-        # Send welcome message if configured
-        if server_config[guild_id].get('welcome_channel'):
-            channel = bot.get_channel(server_config[guild_id]['welcome_channel'])
-            if channel:
-                embed = discord.Embed(
-                    title="🎉 Welcome to the server!",
-                    description=f"Hey {member.mention}, welcome to **{guild.name}**!",
-                    color=discord.Color.green()
-                )
-                if used_invite and inviter:
-                    embed.add_field(name="📬 Invited by", value=inviter.mention, inline=True)
-                    embed.add_field(name="🔗 Invite Code", value=used_invite.code, inline=True)
-                embed.add_field(name="👥 Member Count", value=f"#{guild.member_count}", inline=True)
-                embed.set_thumbnail(url=member.avatar.url if member.avatar else member.default_avatar.url)
-                await channel.send(embed=embed)
-        
-        # Assign auto role if configured
         if server_config[guild_id].get('auto_role'):
             role = guild.get_role(server_config[guild_id]['auto_role'])
             if role:
-                try:
-                    await member.add_roles(role)
-                except discord.Forbidden:
-                    print(f"⚠️ Missing permissions to assign role in {guild.name}")
-        
-        save_data()
+                await member.add_roles(role)
     except discord.Forbidden:
-        print(f"⚠️ Missing permissions to fetch invites in {guild.name}")
+        print(f"⚠️ Missing permissions to assign role in {guild.name}")
+
+    # Save data at the end
+    save_data()
+
 
 # Track when a member leaves
 @bot.event
 async def on_member_remove(member):
     guild_id = str(member.guild.id)
     member_id = str(member.id)
-    
+
     # Check if we have join data for this member
     if member_id in member_join_data and member_join_data[member_id]['guild_id'] == guild_id:
         inviter_id = member_join_data[member_id]['inviter_id']
-        
-        # Decrement inviter's count if applicable
-        if inviter_id and 'invites' in server_config[guild_id] and str(inviter_id) in server_config[guild_id]['invites']:
-            server_config[guild_id]['invites'][str(inviter_id)] = max(
-                0, server_config[guild_id]['invites'][str(inviter_id)] - 1
-            )
-        
-        # Remove member data
+        join_time_str = member_join_data[member_id]['join_time']
+        join_time = datetime.datetime.fromisoformat(join_time_str)
+
+        if inviter_id:
+            # Make sure inviter exists in server config
+            if 'invites' not in server_config[guild_id]:
+                server_config[guild_id]['invites'] = {}
+
+            if str(inviter_id) not in server_config[guild_id]['invites']:
+                server_config[guild_id]['invites'][str(inviter_id)] = {
+                    "regular": 0,
+                    "left": 0,
+                    "fake": 0
+                }
+
+            # Check if the member left quickly (e.g., <2 minutes) → fake invite
+            time_diff = (datetime.datetime.now() - join_time).total_seconds()
+            if time_diff < 120:  # less than 2 minutes
+                server_config[guild_id]['invites'][str(inviter_id)]["fake"] += 1
+            else:
+                server_config[guild_id]['invites'][str(inviter_id)]["left"] += 1
+
+        # Remove member join data
         del member_join_data[member_id]
         save_data()
+
 # Help command
-@bot.command(name='help', aliases=['h'])
+@bot.command(name='helpme')
 async def help_cmd(ctx):
     embed = discord.Embed(
         title="🤖 Falcon Bot Help",
@@ -285,22 +262,49 @@ async def help_cmd(ctx):
     await ctx.send(embed=embed)
 
 # Invite command - shows user's invite count
-@bot.command(name='invites', aliases=['i'])
+@bot.command(name="invites", aliases=["i"])
 async def invites_cmd(ctx, member: discord.Member = None):
     member = member or ctx.author
     guild_id = str(ctx.guild.id)
-    
-    if guild_id not in server_config or 'invites' not in server_config[guild_id]:
-        invite_count = 0
-    else:
-        invite_count = server_config[guild_id]['invites'].get(str(member.id), 0)
-    
+
+    stats = server_config.get(guild_id, {}).get("invites", {}).get(
+        str(member.id), {"regular": 0, "left": 0, "fake": 0}
+    )
+    total = stats["regular"] - stats["left"] - stats["fake"]
+
     embed = discord.Embed(
-        title="📊 Invite Stats",
-        description=f"{member.mention} has invited **{invite_count}** members",
-        color=discord.Color.blue()
+        title=f"📊 Invite Stats for {member.display_name}",
+        color=discord.Color.purple()
     )
     embed.set_thumbnail(url=member.avatar.url if member.avatar else member.default_avatar.url)
+
+    embed.add_field(
+        name="✨ Invites",
+        value=f"```yaml\n{stats['regular']}\n```",
+        inline=True
+    )
+    embed.add_field(
+        name="📤 Left",
+        value=f"```diff\n-{stats['left']}\n```",
+        inline=True
+    )
+    embed.add_field(
+        name="🚫 Fake",
+        value=f"```fix\n{stats['fake']}\n```",
+        inline=True
+    )
+
+    embed.add_field(
+        name="⭐ Total Invites",
+        value=f"```css\n{total}\n```",
+        inline=False
+    )
+
+    embed.set_footer(
+        text=f"Requested by {ctx.author.display_name}",
+        icon_url=ctx.author.avatar.url if ctx.author.avatar else ctx.author.default_avatar.url
+    )
+
     await ctx.send(embed=embed)
 
 # Slash command version of invites
@@ -309,19 +313,47 @@ async def invites_cmd(ctx, member: discord.Member = None):
 async def invites_slash(interaction: discord.Interaction, member: discord.Member = None):
     member = member or interaction.user
     guild_id = str(interaction.guild.id)
-    
-    if guild_id not in server_config or 'invites' not in server_config[guild_id]:
-        invite_count = 0
-    else:
-        invite_count = server_config[guild_id]['invites'].get(str(member.id), 0)
-    
+
+    stats = server_config.get(guild_id, {}).get("invites", {}).get(
+        str(member.id), {"regular": 0, "left": 0, "fake": 0}
+    )
+    total = stats["regular"] - stats["left"] - stats["fake"]
+
     embed = discord.Embed(
-        title="📊 Invite Stats",
-        description=f"{member.mention} has invited **{invite_count}** members",
-        color=discord.Color.blue()
+        title=f"📊 Invite Stats for {member.display_name}",
+        color=discord.Color.purple()
     )
     embed.set_thumbnail(url=member.avatar.url if member.avatar else member.default_avatar.url)
+
+    embed.add_field(
+        name="✨ Invites",
+        value=f"```yaml\n{stats['regular']}\n```",
+        inline=True
+    )
+    embed.add_field(
+        name="📤 Left",
+        value=f"```diff\n-{stats['left']}\n```",
+        inline=True
+    )
+    embed.add_field(
+        name="🚫 Fake",
+        value=f"```fix\n{stats['fake']}\n```",
+        inline=True
+    )
+
+    embed.add_field(
+        name="⭐ Total Invites",
+        value=f"```css\n{total}\n```",
+        inline=False
+    )
+
+    embed.set_footer(
+        text=f"Requested by {interaction.user.display_name}",
+        icon_url=interaction.user.avatar.url if interaction.user.avatar else interaction.user.default_avatar.url
+    )
+
     await interaction.response.send_message(embed=embed)
+
 # Reset invites command
 @bot.command(name='resetinvites')
 @commands.has_permissions(administrator=True)
